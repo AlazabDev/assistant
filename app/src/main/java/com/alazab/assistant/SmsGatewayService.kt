@@ -16,6 +16,9 @@ import com.alazab.assistant.data.SmsTask
 import com.alazab.assistant.network.HookClient
 import com.alazab.assistant.network.SupabaseClient
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -32,11 +35,172 @@ class SmsGatewayService : Service() {
 
     private var pollJob: Job? = null
 
+    private val smsSentReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val taskId = intent?.getStringExtra("taskId") ?: return
+            val reportUrl = intent.getStringExtra("reportUrl") ?: ""
+            val deviceId = intent.getStringExtra("deviceId") ?: ""
+            val apiKey = intent.getStringExtra("apiKey") ?: ""
+            val phoneNumber = intent.getStringExtra("phoneNumber") ?: ""
+            val messageText = intent.getStringExtra("messageText") ?: ""
+            
+            val timeNow = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
+            val isSuccess = resultCode == Activity.RESULT_OK
+            val status = if (isSuccess) "SENT" else "FAILED"
+            val errorMsg = if (isSuccess) null else getSmsErrorDescription(resultCode)
+            
+            serviceScope.launch {
+                try {
+                    val task = repository.getSmsTask(taskId)
+                    if (task != null) {
+                        if (isSuccess) {
+                            val todayCount = prefs.getInt("sms_sent_today_count", 0)
+                            val monthCount = prefs.getInt("sms_sent_this_month_count", 0)
+                            prefs.edit()
+                                .putInt("sms_sent_today_count", todayCount + 1)
+                                .putInt("sms_sent_this_month_count", monthCount + 1)
+                                .apply()
+
+                            repository.updateSmsTaskStatus(taskId, "SENT", timeNow, null)
+                            hookClient.reportSmsStatus(reportUrl, taskId, deviceId, "SENT", null, apiKey)
+                            
+                            val supabaseEnabled = prefs.getBoolean("supabase_sync_enabled", false)
+                            val supabaseUrl = prefs.getString("supabase_url", "https://bxuhcbfdoaflsgbxiqei.supabase.co") ?: "https://bxuhcbfdoaflsgbxiqei.supabase.co"
+                            val supabaseKey = prefs.getString("supabase_key", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4dWhjYmZkb2FmbHNnYnhpcWVpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkwMTU1MDIsImV4cCI6MjA4NDU5MTUwMn0.W60YuL2zn9De95Jwgc7jn4_NLMdOVINHO6NUWY6yRlQ") ?: ""
+                            if (supabaseEnabled && supabaseUrl.isNotEmpty() && supabaseKey.isNotEmpty()) {
+                                supabaseClient.reportSmsStatus(supabaseUrl, supabaseKey, taskId, "SENT", null)
+                            }
+
+                            // Record outbound history
+                            val outgoingEvent = CapturedEvent(
+                                provider = "مؤسسة العزب (+201004006620)",
+                                channel = "sms",
+                                direction = "outgoing",
+                                rawText = messageText,
+                                sender = AlazabEnterpriseConfig.OFFICIAL_ENTERPRISE_PHONE,
+                                receivedAtDevice = timeNow,
+                                classification = "ENTERPRISE_DISPATCH",
+                                entityId = taskId
+                            )
+                            repository.insertAndSync(outgoingEvent)
+
+                            updateTelemetry { current ->
+                                current.copy(
+                                    state = GatewayState.Ready,
+                                    sentTodayCount = todayCount + 1,
+                                    sentThisMonthCount = monthCount + 1,
+                                    lastDispatchedRecipient = phoneNumber,
+                                    lastDispatchedTaskId = taskId,
+                                    lastDispatchedStatus = "SENT",
+                                    lastDispatchedTime = timeNow,
+                                    lastSuccessTimestamp = System.currentTimeMillis()
+                                )
+                            }
+                            Log.d("SmsGatewayService", "Successfully processed SMS SENT confirmation for task $taskId")
+                        } else {
+                            val newRetry = task.retryCount + 1
+                            val newStatus = if (newRetry >= 3) "FAILED" else "PENDING"
+                            
+                            val updatedTask = task.copy(
+                                status = newStatus,
+                                retryCount = newRetry,
+                                lastAttemptAt = timeNow,
+                                errorMessage = errorMsg
+                            )
+                            repository.updateSmsTask(updatedTask)
+
+                            updateTelemetry { current ->
+                                current.copy(
+                                    state = GatewayState.Error(errorMsg ?: "فشل تسليم الرسالة لشبكة المحمول"),
+                                    lastDispatchedRecipient = phoneNumber,
+                                    lastDispatchedTaskId = taskId,
+                                    lastDispatchedStatus = "FAILED",
+                                    lastDispatchedTime = timeNow,
+                                    lastErrorTimestamp = System.currentTimeMillis(),
+                                    lastErrorMessage = errorMsg
+                                )
+                            }
+                            
+                            if (newStatus == "FAILED") {
+                                hookClient.reportSmsStatus(reportUrl, taskId, deviceId, "FAILED", errorMsg, apiKey)
+                                val supabaseEnabled = prefs.getBoolean("supabase_sync_enabled", false)
+                                val supabaseUrl = prefs.getString("supabase_url", "https://bxuhcbfdoaflsgbxiqei.supabase.co") ?: "https://bxuhcbfdoaflsgbxiqei.supabase.co"
+                                val supabaseKey = prefs.getString("supabase_key", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4dWhjYmZkb2FmbHNnYnhpcWVpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkwMTU1MDIsImV4cCI6MjA4NDU5MTUwMn0.W60YuL2zn9De95Jwgc7jn4_NLMdOVINHO6NUWY6yRlQ") ?: ""
+                                if (supabaseEnabled && supabaseUrl.isNotEmpty() && supabaseKey.isNotEmpty()) {
+                                    supabaseClient.reportSmsStatus(supabaseUrl, supabaseKey, taskId, "FAILED", errorMsg)
+                                }
+                            }
+                            Log.e("SmsGatewayService", "Failed to send SMS for task $taskId, retryCount: $newRetry, error: $errorMsg")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("SmsGatewayService", "Error handling SMS_SENT broadcast", e)
+                }
+            }
+        }
+    }
+
+    private val smsDeliveredReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val taskId = intent?.getStringExtra("taskId") ?: return
+            val reportUrl = intent.getStringExtra("reportUrl") ?: ""
+            val deviceId = intent.getStringExtra("deviceId") ?: ""
+            val apiKey = intent.getStringExtra("apiKey") ?: ""
+            
+            val timeNow = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
+            val isSuccess = resultCode == Activity.RESULT_OK
+            
+            serviceScope.launch {
+                try {
+                    if (isSuccess) {
+                        repository.updateSmsTaskStatus(taskId, "DELIVERED", timeNow, null)
+                        hookClient.reportSmsStatus(reportUrl, taskId, deviceId, "DELIVERED", null, apiKey)
+                        
+                        val supabaseEnabled = prefs.getBoolean("supabase_sync_enabled", false)
+                        val supabaseUrl = prefs.getString("supabase_url", "https://bxuhcbfdoaflsgbxiqei.supabase.co") ?: "https://bxuhcbfdoaflsgbxiqei.supabase.co"
+                        val supabaseKey = prefs.getString("supabase_key", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4dWhjYmZkb2FmbHNnYnhpcWVpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkwMTU1MDIsImV4cCI6MjA4NDU5MTUwMn0.W60YuL2zn9De95Jwgc7jn4_NLMdOVINHO6NUWY6yRlQ") ?: ""
+                        if (supabaseEnabled && supabaseUrl.isNotEmpty() && supabaseKey.isNotEmpty()) {
+                            supabaseClient.reportSmsStatus(supabaseUrl, supabaseKey, taskId, "DELIVERED", null)
+                        }
+                        updateTelemetry { current ->
+                            current.copy(
+                                lastDispatchedStatus = "DELIVERED"
+                            )
+                        }
+                        Log.d("SmsGatewayService", "Successfully processed SMS DELIVERED confirmation for task $taskId")
+                    } else {
+                        Log.w("SmsGatewayService", "SMS delivery report for task $taskId reported code $resultCode (not delivered)")
+                    }
+                } catch (e: Exception) {
+                    Log.e("SmsGatewayService", "Error handling SMS_DELIVERED broadcast", e)
+                }
+            }
+        }
+    }
+
+    private fun getSmsErrorDescription(resultCode: Int): String {
+        return AlazabEnterpriseConfig.getSmsErrorDescription(resultCode)
+    }
+
     companion object {
         private const val NOTIFICATION_CHANNEL_ID = "sms_gateway_channel"
         private const val NOTIFICATION_ID = 1337
         
+        private val _telemetry = MutableStateFlow(
+            GatewayConnectionTelemetry(
+                officialPhone = AlazabEnterpriseConfig.OFFICIAL_ENTERPRISE_PHONE,
+                carrierName = "فودافون مصر (Vodafone Egypt)",
+                state = GatewayState.Stopped
+            )
+        )
+        val telemetry: StateFlow<GatewayConnectionTelemetry> = _telemetry.asStateFlow()
+
+        fun updateTelemetry(update: (GatewayConnectionTelemetry) -> GatewayConnectionTelemetry) {
+            _telemetry.value = update(_telemetry.value)
+        }
+
         fun start(context: Context) {
+            updateTelemetry { it.copy(isServiceRunning = true, state = GatewayState.Ready) }
             val intent = Intent(context, SmsGatewayService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -46,6 +210,7 @@ class SmsGatewayService : Service() {
         }
 
         fun stop(context: Context) {
+            updateTelemetry { it.copy(isServiceRunning = false, state = GatewayState.Stopped) }
             val intent = Intent(context, SmsGatewayService::class.java)
             context.stopService(intent)
         }
@@ -57,6 +222,32 @@ class SmsGatewayService : Service() {
         database = AppDatabase.getDatabase(this)
         repository = CapturedEventRepository(database.capturedEventDao(), database.smsTaskDao(), hookClient, this)
         prefs = getSharedPreferences("azab_assistant_prefs", Context.MODE_PRIVATE)
+
+        val isEnabled = prefs.getBoolean("sms_pull_enabled", false)
+        val todayCount = prefs.getInt("sms_sent_today_count", 0)
+        val monthCount = prefs.getInt("sms_sent_this_month_count", 0)
+        val todayLimit = prefs.getInt("daily_sms_limit", 100)
+        val monthLimit = prefs.getInt("monthly_sms_limit", 2000)
+
+        updateTelemetry { current ->
+            current.copy(
+                isServiceRunning = true,
+                state = if (isEnabled) GatewayState.Ready else GatewayState.Stopped,
+                sentTodayCount = todayCount,
+                dailyLimit = todayLimit,
+                sentThisMonthCount = monthCount,
+                monthlyLimit = monthLimit,
+                lastHeartbeatMs = System.currentTimeMillis()
+            )
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(smsSentReceiver, android.content.IntentFilter("com.alazab.assistant.SMS_SENT"), Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(smsDeliveredReceiver, android.content.IntentFilter("com.alazab.assistant.SMS_DELIVERED"), Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(smsSentReceiver, android.content.IntentFilter("com.alazab.assistant.SMS_SENT"))
+            registerReceiver(smsDeliveredReceiver, android.content.IntentFilter("com.alazab.assistant.SMS_DELIVERED"))
+        }
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("تم بدء تشغيل بوابة الرسائل القصيرة تلقائياً"))
@@ -79,6 +270,7 @@ class SmsGatewayService : Service() {
             while (isActive) {
                 val isEnabled = prefs.getBoolean("sms_pull_enabled", false)
                 if (!isEnabled) {
+                    updateTelemetry { it.copy(state = GatewayState.Stopped) }
                     updateNotification("بوابة الرسائل بالخلفية (معطلة حالياً)")
                     delay(10000)
                     continue
@@ -98,6 +290,7 @@ class SmsGatewayService : Service() {
                     val reportUrl = prefs.getString("sms_report_url", defaultDerivedReport) ?: defaultDerivedReport
 
                     updateNotification("جاري فحص المهام من السيرفر...")
+                    updateTelemetry { it.copy(lastHeartbeatMs = System.currentTimeMillis()) }
 
                     // 1. Pull tasks
                     val fetchedTasks = hookClient.pullSmsTasks(pullUrl, deviceId, apiKey)
@@ -123,18 +316,34 @@ class SmsGatewayService : Service() {
 
                     // 2. Process pending outbox queue
                     val pendingQueue = repository.getPendingSmsTasks()
+                    updateTelemetry { it.copy(pendingQueueCount = pendingQueue.size) }
                     if (pendingQueue.isNotEmpty()) {
-                        updateNotification("جاري إرسال عدد ${pendingQueue.size} رسالة قصيرة...")
+                        updateNotification("جاري إرسال عدد ${pendingQueue.size} رسالة عبر +201004006620...")
                         for (task in pendingQueue) {
                             sendAndReportSms(task, reportUrl, deviceId, apiKey)
+                            delay(1500L) // Safe cellular inter-message pacing for Vodafone Egypt
+                        }
+                        val remainingCount = repository.getPendingSmsTasks().size
+                        updateTelemetry { current ->
+                            current.copy(
+                                pendingQueueCount = remainingCount,
+                                state = if (current.state is GatewayState.Sending) GatewayState.Ready else current.state
+                            )
                         }
                     } else {
-                        updateNotification("البوابة نشطة | لا توجد رسائل معلقة")
+                        updateNotification("بوابة العزب نشطة (+201004006620) | لا توجد رسائل معلقة")
+                        updateTelemetry { current ->
+                            if (current.state is GatewayState.Sending || current.state is GatewayState.Stopped) {
+                                current.copy(state = GatewayState.Ready, pendingQueueCount = 0)
+                            } else current.copy(pendingQueueCount = 0)
+                        }
                     }
 
                 } catch (e: Exception) {
                     Log.e("SmsGatewayService", "Error in gateway loop", e)
-                    updateNotification("خطأ في الاتصال بالبوابة: ${e.localizedMessage}")
+                    val errorMsg = e.localizedMessage ?: "Unknown error"
+                    updateTelemetry { it.copy(state = GatewayState.Error("خطأ في الاتصال بالبوابة: $errorMsg"), lastErrorMessage = errorMsg, lastErrorTimestamp = System.currentTimeMillis()) }
+                    updateNotification("خطأ في الاتصال بالبوابة: $errorMsg")
                 }
 
                 // Sleep according to configurable interval (default: 30s)
@@ -165,6 +374,7 @@ class SmsGatewayService : Service() {
 
         if (todayCount >= todayLimit) {
             val errorMsg = "Daily SMS limit exceeded ($todayCount/$todayLimit)"
+            updateTelemetry { it.copy(state = GatewayState.Error(errorMsg), lastErrorMessage = errorMsg, lastErrorTimestamp = System.currentTimeMillis()) }
             repository.updateSmsTaskStatus(task.taskId, "FAILED", timeNow, errorMsg)
             hookClient.reportSmsStatus(reportUrl, task.taskId, deviceId, "FAILED", errorMsg, apiKey)
             reportSupabase("FAILED", errorMsg)
@@ -173,47 +383,83 @@ class SmsGatewayService : Service() {
 
         if (monthCount >= monthLimit) {
             val errorMsg = "Monthly SMS limit exceeded ($monthCount/$monthLimit)"
+            updateTelemetry { it.copy(state = GatewayState.Error(errorMsg), lastErrorMessage = errorMsg, lastErrorTimestamp = System.currentTimeMillis()) }
             repository.updateSmsTaskStatus(task.taskId, "FAILED", timeNow, errorMsg)
             hookClient.reportSmsStatus(reportUrl, task.taskId, deviceId, "FAILED", errorMsg, apiKey)
             reportSupabase("FAILED", errorMsg)
             return
         }
 
-        // Physically send SMS
+        val normalizedNumber = AlazabEnterpriseConfig.normalizePhoneNumber(task.phoneNumber)
+        if (normalizedNumber.isBlank() || normalizedNumber.length < 9) {
+            val errorMsg = "رقم هاتف المستلم غير صحيح (${task.phoneNumber})"
+            updateTelemetry { it.copy(state = GatewayState.Error(errorMsg), lastErrorMessage = errorMsg, lastErrorTimestamp = System.currentTimeMillis()) }
+            repository.updateSmsTaskStatus(task.taskId, "FAILED", timeNow, errorMsg)
+            hookClient.reportSmsStatus(reportUrl, task.taskId, deviceId, "FAILED", errorMsg, apiKey)
+            reportSupabase("FAILED", errorMsg)
+            return
+        }
+
+        // Physically send SMS with safe multipart splitting and UCS-2 Arabic support
         try {
-            val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                this.getSystemService(SmsManager::class.java) ?: SmsManager.getDefault()
-            } else {
-                SmsManager.getDefault()
+            val encodingInfo = AlazabEnterpriseConfig.analyzeSmsEncoding(task.messageText)
+            updateTelemetry { current ->
+                current.copy(
+                    state = GatewayState.Sending(
+                        recipient = normalizedNumber,
+                        taskId = task.taskId,
+                        partCount = encodingInfo.partCount
+                    ),
+                    lastDispatchedRecipient = normalizedNumber,
+                    lastDispatchedTaskId = task.taskId,
+                    lastDispatchedTime = timeNow,
+                    lastActiveTimestamp = System.currentTimeMillis()
+                )
             }
 
-            // Standard sending
-            smsManager.sendTextMessage(task.phoneNumber, null, task.messageText, null, null)
-            Log.d("SmsGatewayService", "Physically dispatched SMS to ${task.phoneNumber}")
-
-            // Increment local limit counters
-            prefs.edit()
-                .putInt("sms_sent_today_count", todayCount + 1)
-                .putInt("sms_sent_this_month_count", monthCount + 1)
-                .apply()
-
-            // Update status to SENT locally and on server
-            repository.updateSmsTaskStatus(task.taskId, "SENT", timeNow, null)
-            hookClient.reportSmsStatus(reportUrl, task.taskId, deviceId, "SENT", null, apiKey)
-            reportSupabase("SENT", null)
-
-            // Also record this outbound message in general history
-            val outgoingEvent = CapturedEvent(
-                provider = "Gateway Outbox",
-                channel = "sms",
-                direction = "outgoing",
-                rawText = task.messageText,
-                sender = task.phoneNumber,
-                receivedAtDevice = timeNow,
-                classification = "SYSTEM",
-                entityId = task.taskId
+            // Define PendingIntents for SENT and DELIVERED status confirmation
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+            
+            val sentIntent = PendingIntent.getBroadcast(
+                this,
+                task.taskId.hashCode(),
+                Intent("com.alazab.assistant.SMS_SENT").apply {
+                    putExtra("taskId", task.taskId)
+                    putExtra("reportUrl", reportUrl)
+                    putExtra("deviceId", deviceId)
+                    putExtra("apiKey", apiKey)
+                    putExtra("phoneNumber", normalizedNumber)
+                    putExtra("messageText", task.messageText)
+                },
+                flags
             )
-            repository.insertAndSync(outgoingEvent)
+
+            val deliveryIntent = PendingIntent.getBroadcast(
+                this,
+                task.taskId.hashCode() + 1,
+                Intent("com.alazab.assistant.SMS_DELIVERED").apply {
+                    putExtra("taskId", task.taskId)
+                    putExtra("reportUrl", reportUrl)
+                    putExtra("deviceId", deviceId)
+                    putExtra("apiKey", apiKey)
+                    putExtra("phoneNumber", normalizedNumber)
+                    putExtra("messageText", task.messageText)
+                },
+                flags
+            )
+
+            // Update status to DISPATCHED locally to prevent double processing in the loop
+            repository.updateSmsTaskStatus(task.taskId, "DISPATCHED", timeNow, null)
+
+            // Safe multipart transmission using enterprise engine
+            val partsCount = AlazabEnterpriseConfig.sendSmsSafely(
+                context = this,
+                recipient = normalizedNumber,
+                messageText = task.messageText,
+                sentIntent = sentIntent,
+                deliveryIntent = deliveryIntent
+            )
+            Log.d("SmsGatewayService", "Physically dispatched SMS to $normalizedNumber ($partsCount parts) for task ${task.taskId}")
 
         } catch (e: Exception) {
             Log.e("SmsGatewayService", "Failed to dispatch SMS", e)
@@ -293,6 +539,13 @@ class SmsGatewayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d("SmsGatewayService", "Service onDestroy")
+        updateTelemetry { it.copy(isServiceRunning = false, state = GatewayState.Stopped) }
+        try {
+            unregisterReceiver(smsSentReceiver)
+            unregisterReceiver(smsDeliveredReceiver)
+        } catch (e: Exception) {
+            Log.e("SmsGatewayService", "Unregister failed", e)
+        }
         serviceJob.cancel()
     }
 }

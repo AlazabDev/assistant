@@ -2,6 +2,7 @@ package com.alazab.assistant.data
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import com.alazab.assistant.AlazabEnterpriseConfig
 
 @Entity(tableName = "captured_events")
 data class CapturedEvent(
@@ -27,24 +28,53 @@ data class CapturedEvent(
             var classification = "SUPPORTING_PROOF"
             val normalizedBody = body.replace("\n", " ").replace("\r", " ")
 
-            val isVfCash = sender.contains("VF-Cash", ignoreCase = true) || sender.contains("Vodafone", ignoreCase = true)
-            if (isVfCash) {
-                if (body.contains("تم استلام") || body.contains("تم إرسال") || body.contains("رصيد") || body.contains("محفظت")) {
-                    classification = "STRONG_PROOF"
-                }
-                val regexOp = Regex("العملية\\s*:?\\s*(\\d+)")
-                val matchResult = regexOp.find(normalizedBody)
-                if (matchResult != null) {
-                    entityId = matchResult.groupValues[1]
-                }
-            } else if (sender.contains("QNB", ignoreCase = true) || sender.contains("CIB", ignoreCase = true) || sender.contains("IPN", ignoreCase = true) || sender.contains("InstaPay", ignoreCase = true) || body.contains("IPN", ignoreCase = true)) {
-                if (body.contains("transfer sent", ignoreCase = true) || body.contains("transfer received", ignoreCase = true) || body.contains("Successful transaction", ignoreCase = true) || body.contains("تم تنفيذ تحويل", ignoreCase = true) || body.contains("charged for", ignoreCase = true)) {
-                    classification = "STRONG_PROOF"
-                }
-                val regexRef = Regex("Ref#?\\s*([a-zA-Z0-9]+)", RegexOption.IGNORE_CASE)
+            // Check if from or directed to Alazab Enterprise official phone (+201004006620)
+            val isOfficialEnterprise = AlazabEnterpriseConfig.isEnterprisePhone(sender) ||
+                    body.contains("+201004006620") ||
+                    body.contains("01004006620") ||
+                    body.contains("مؤسسة العزب")
+
+            val isVfCash = sender.contains("VF-Cash", ignoreCase = true) || sender.contains("Vodafone", ignoreCase = true) || sender.contains("12345")
+            val isFawry = sender.contains("Fawry", ignoreCase = true) || body.contains("Fawry", ignoreCase = true)
+
+            // Normalize Eastern Arabic numerals in body for clean regex matching
+            val westernBody = AlazabEnterpriseConfig.normalizePhoneNumber(normalizedBody)
+
+            if (isOfficialEnterprise) {
+                classification = "ENTERPRISE_OFFICIAL"
+                val regexRef = Regex("(?:\\[Ref:\\s*|Ref#?\\s*|مرجع:?\\s*|كود:?\\s*)([a-zA-Z0-9]+)", RegexOption.IGNORE_CASE)
                 val matchResult = regexRef.find(normalizedBody)
                 if (matchResult != null) {
                     entityId = matchResult.groupValues[1]
+                }
+            } else if (isVfCash) {
+                // Vodafone Cash incoming only = strong
+                val isIncoming = body.contains("تم استلام") || body.contains("تم إيداع") || body.contains("تم ايداع") || body.contains("إليك") || body.contains("محول من") || body.contains("تحويل من")
+                if (isIncoming) {
+                    classification = "STRONG_PROOF"
+                } else {
+                    classification = "SUPPORTING_PROOF"
+                }
+                val regexOp = Regex("العملية\\s*:?\\s*([0-9٠-٩]+)")
+                val matchResult = regexOp.find(normalizedBody)
+                if (matchResult != null) {
+                    entityId = AlazabEnterpriseConfig.normalizePhoneNumber(matchResult.groupValues[1])
+                }
+            } else if (isFawry) {
+                // Fawry = standby
+                classification = "STANDBY_PROOF"
+                val regexRef = Regex("Ref#?\\s*([0-9٠-٩]+)", RegexOption.IGNORE_CASE)
+                val matchResult = regexRef.find(normalizedBody)
+                if (matchResult != null) {
+                    entityId = AlazabEnterpriseConfig.normalizePhoneNumber(matchResult.groupValues[1])
+                }
+            } else if (sender.contains("QNB", ignoreCase = true) || sender.contains("CIB", ignoreCase = true) || sender.contains("IPN", ignoreCase = true) || sender.contains("InstaPay", ignoreCase = true) || body.contains("IPN", ignoreCase = true)) {
+                // QNB / CIB / IPN transfer sent = supporting ONLY
+                classification = "SUPPORTING_PROOF"
+                val regexRef = Regex("Ref#?\\s*([a-zA-Z0-9٠-٩]+)", RegexOption.IGNORE_CASE)
+                val matchResult = regexRef.find(normalizedBody)
+                if (matchResult != null) {
+                    entityId = AlazabEnterpriseConfig.normalizePhoneNumber(matchResult.groupValues[1])
                 }
             }
 
@@ -69,16 +99,13 @@ data class CapturedEvent(
             val isVodafone = packageName.contains("vodafone", ignoreCase = true) || packageName.contains("myservices", ignoreCase = true)
             val isFawry = packageName.contains("fawry", ignoreCase = true)
 
-            if (isInstaPay) {
-                classification = "STRONG_PROOF"
-                val regexRef = Regex("Ref#?\\s*([a-zA-Z0-9]+)", RegexOption.IGNORE_CASE)
-                val matchResult = regexRef.find(normalizedText)
-                if (matchResult != null) {
-                    entityId = matchResult.groupValues[1]
-                }
-            } else if (isVodafone) {
-                if (text.contains("تم استلام") || text.contains("تم إرسال") || text.contains("رصيد") || text.contains("محفظة") || text.contains("Cash", ignoreCase = true)) {
+            if (isVodafone) {
+                // Vodafone Cash incoming only = strong
+                val isIncoming = text.contains("تم استلام") || text.contains("تم إيداع") || text.contains("تم ايداع") || text.contains("إليك") || text.contains("محول من") || text.contains("تحويل من") || text.contains("Cash In", ignoreCase = true) || text.contains("Received", ignoreCase = true)
+                if (isIncoming) {
                     classification = "STRONG_PROOF"
+                } else {
+                    classification = "SUPPORTING_PROOF"
                 }
                 val regexOp = Regex("العملية\\s*:?\\s*(\\d+)")
                 val matchResult = regexOp.find(normalizedText)
@@ -86,19 +113,22 @@ data class CapturedEvent(
                     entityId = matchResult.groupValues[1]
                 }
             } else if (isFawry) {
-                if (text.contains("تم دفع") || text.contains("ناجحة") || text.contains("تم استلام") || text.contains("Ref", ignoreCase = true)) {
-                    classification = "STRONG_PROOF"
-                }
+                // Fawry = standby
+                classification = "STANDBY_PROOF"
                 val regexRef = Regex("Ref#?\\s*(\\d+)", RegexOption.IGNORE_CASE)
                 val matchResult = regexRef.find(normalizedText)
                 if (matchResult != null) {
                     entityId = matchResult.groupValues[1]
                 }
-            } else {
-                val isTransfer = text.contains("تم استلام") || text.contains("تم إرسال") || text.contains("تحويل") || text.contains("transfer", ignoreCase = true)
-                if (isTransfer) {
-                    classification = "STRONG_PROOF"
+            } else if (isInstaPay || packageName.contains("qnb", ignoreCase = true) || packageName.contains("cib", ignoreCase = true) || packageName.contains("ipn", ignoreCase = true)) {
+                // QNB / CIB / IPN transfer sent = supporting ONLY
+                classification = "SUPPORTING_PROOF"
+                val regexRef = Regex("Ref#?\\s*([a-zA-Z0-9]+)", RegexOption.IGNORE_CASE)
+                val matchResult = regexRef.find(normalizedText)
+                if (matchResult != null) {
+                    entityId = matchResult.groupValues[1]
                 }
+            } else {
                 val regexRefGen = Regex("Ref(?:erence)?\\s*(?:Number)?:?\\s*#?\\s*([a-zA-Z0-9]+)", RegexOption.IGNORE_CASE)
                 val matchResult = regexRefGen.find(normalizedText)
                 if (matchResult != null) {

@@ -1,6 +1,7 @@
 package com.alazab.assistant
 
 import android.Manifest
+import android.net.Uri
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -50,6 +51,7 @@ import com.alazab.assistant.data.AppDatabase
 import com.alazab.assistant.data.CapturedEvent
 import com.alazab.assistant.data.CapturedEventRepository
 import com.alazab.assistant.network.HookClient
+import com.alazab.assistant.ui.SmsGatewayStatusCard
 import com.alazab.assistant.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -117,17 +119,16 @@ fun SleekTopAppBar() {
             Box(
                 modifier = Modifier
                     .size(44.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFFFFB900))
-                    .border(1.5.dp, Color.White, RoundedCornerShape(10.dp)),
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White)
+                    .border(1.5.dp, Color(0xFFFFB900), RoundedCornerShape(12.dp))
+                    .padding(3.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "AZ",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Black,
-                    color = Color(0xFF030957),
-                    letterSpacing = (-0.5).sp
+                androidx.compose.foundation.Image(
+                    painter = painterResource(id = R.drawable.azab_assistant_logo),
+                    contentDescription = "Azab Assistant Logo",
+                    modifier = Modifier.fillMaxSize()
                 )
             }
 
@@ -255,6 +256,7 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
     var sentThisMonth by remember { mutableStateOf(prefs.getInt("sms_sent_this_month_count", 0)) }
 
     val smsTasks by viewModel.allSmsTasks.collectAsState()
+    val gatewayTelemetry by viewModel.gatewayTelemetry.collectAsState()
 
     // Periodically update preferences snapshot
     LaunchedEffect(Unit) {
@@ -375,6 +377,29 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
                     )
                 }
             }
+        }
+
+        // Dedicated SMS Gateway Status UI Component for +201004006620
+        item {
+            SmsGatewayStatusCard(
+                telemetry = gatewayTelemetry,
+                isServiceEnabled = smsPullEnabled,
+                onToggleService = { enabled ->
+                    smsPullEnabled = enabled
+                    viewModel.toggleGatewayService(context, enabled)
+                },
+                onRestartGateway = {
+                    viewModel.restartGateway(context)
+                },
+                onCheckConnection = {
+                    viewModel.checkGatewayConnection(context)
+                }
+            )
+        }
+
+        // Realme C55 / Oppo background optimization setup card
+        item {
+            RealmeOptimizationsCard()
         }
 
         // Section 1: Grid row (Permissions & Sync Queue status)
@@ -1065,6 +1090,90 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
                         exit = shrinkVertically()
                     ) {
                         Column(modifier = Modifier.padding(top = 12.dp)) {
+                            // Official Enterprise Line Banner (+201004006620)
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F4FF)),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(1.dp, Color(0xFFC7D8F9), RoundedCornerShape(12.dp))
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF030957)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Phone,
+                                                contentDescription = "Official Phone",
+                                                tint = Color(0xFFFFB900),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                        Column {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(
+                                                    text = AlazabEnterpriseConfig.OFFICIAL_ENTERPRISE_PHONE,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF030957)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(Color(0xFFE8F5E9))
+                                                        .padding(horizontal = 6.dp, vertical = 1.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "رقم رسمي معتمد",
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color(0xFF2E7D32)
+                                                    )
+                                                }
+                                            }
+                                            Text(
+                                                text = "مؤسسة العزب • شبكة فودافون مصر",
+                                                fontSize = 10.sp,
+                                                color = Color(0xFF49454F)
+                                            )
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                            val clip = android.content.ClipData.newPlainText("Alazab Phone", AlazabEnterpriseConfig.OFFICIAL_ENTERPRISE_PHONE)
+                                            clipboard.setPrimaryClip(clip)
+                                            Toast.makeText(context, "تم نسخ رقم المؤسسة (+201004006620)", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Share,
+                                            contentDescription = "Copy Number",
+                                            tint = Color(0xFF030957),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
                             // 1. Switch Toggle
                             Row(
                                 modifier = Modifier
@@ -1369,11 +1478,31 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
                             )
                             Spacer(modifier = Modifier.height(10.dp))
 
+                            // Recipient Field Header with Enterprise quick button
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "رقم المستلم (Phone Number)",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF030957)
+                                )
+                                TextButton(
+                                    onClick = { smsRecipient = AlazabEnterpriseConfig.OFFICIAL_ENTERPRISE_PHONE },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                ) {
+                                    Text("رقم المؤسسة (+201004006620)", fontSize = 10.sp, color = Color(0xFF1565C0))
+                                }
+                            }
+
                             // Recipient Field
                             OutlinedTextField(
                                 value = smsRecipient,
                                 onValueChange = { smsRecipient = it },
-                                label = { Text("رقم المستلم (Phone Number)") },
+                                label = { Text("مثال: +201004006620 أو 01004006620") },
                                 singleLine = true,
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.fillMaxWidth(),
@@ -1450,7 +1579,69 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
                                     unfocusedBorderColor = Color(0xFFE1E2EC)
                                 )
                             )
-                            Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            // Live SMS Encoding & Multipart Analyzer
+                            val encodingInfo = AlazabEnterpriseConfig.analyzeSmsEncoding(smsMessageText)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFFF1F3F9))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (encodingInfo.isUnicodeArabic) Color(0xFFE3F2FD) else Color(0xFFEDE7F6))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = if (encodingInfo.isUnicodeArabic) "عربي (UCS-2)" else "GSM-7",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (encodingInfo.isUnicodeArabic) Color(0xFF1565C0) else Color(0xFF512DA8)
+                                        )
+                                    }
+                                    Text(
+                                        text = "${encodingInfo.totalCharacters} حرف",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = Color(0xFF49454F)
+                                    )
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (encodingInfo.partCount > 1) Color(0xFFFFF3E0) else Color(0xFFE8F5E9))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = "${encodingInfo.partCount} ${if (encodingInfo.partCount == 1) "رسالة" else "أجزاء مقسمة"}",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (encodingInfo.partCount > 1) Color(0xFFE65100) else Color(0xFF2E7D32)
+                                        )
+                                    }
+                                    Text(
+                                        text = "متبقي: ${encodingInfo.charactersRemainingInCurrentPart}",
+                                        fontSize = 9.sp,
+                                        color = Color(0xFF757575)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
 
                             Button(
                                 onClick = {
@@ -1532,6 +1723,177 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
         } else {
             items(events) { event ->
                 SleekEventLogItem(event = event)
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(100.dp))
+        }
+    }
+}
+
+@Composable
+fun RealmeOptimizationsCard() {
+    val context = LocalContext.current
+    val manufacturer = remember { android.os.Build.MANUFACTURER }
+    val isRealmeOrOppo = remember {
+        manufacturer.contains("realme", ignoreCase = true) || 
+        manufacturer.contains("oppo", ignoreCase = true) ||
+        manufacturer.contains("oneplus", ignoreCase = true)
+    }
+
+    val powerManager = remember { context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager }
+    var isIgnoringBattery by remember {
+        mutableStateOf(
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+            } else {
+                true
+            }
+        )
+    }
+
+    // Poller to update battery optimization state
+    LaunchedEffect(Unit) {
+        while (true) {
+            isIgnoringBattery = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+            } else {
+                true
+            }
+            kotlinx.coroutines.delay(3000)
+        }
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF9C4)), // Warn style amber-yellow
+        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.5.dp, Color(0xFFF57F17), RoundedCornerShape(24.dp))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = "Realme C55 Background Fix",
+                    tint = Color(0xFFE65100),
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "تهيئة الخلفية والاستقرار (Realme C55 / Oppo)",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFE65100)
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Text(
+                text = "تقوم واجهة Realme UI بإغلاق التطبيقات في الخلفية تلقائياً لمنع استهلاك البطارية، مما قد يعطل استقبال الرسائل وإرسالها. اتبع الخطوات التالية للتشغيل المستمر:",
+                fontSize = 12.sp,
+                color = Color(0xFF5D4037),
+                lineHeight = 18.sp
+            )
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            // Step 1
+            Row(verticalAlignment = Alignment.Top) {
+                Text("١. ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
+                Text(
+                    text = "استثناء من تحسين البطارية: اضغط على الزر بالأسفل واختر 'بلا قيود' (Unrestricted) أو 'عدم التحسين'.",
+                    fontSize = 11.sp,
+                    color = Color(0xFF5D4037)
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(6.dp))
+            
+            // Step 2
+            Row(verticalAlignment = Alignment.Top) {
+                Text("٢. ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
+                Text(
+                    text = "التشغيل التلقائي (Auto-launch): افتح تفاصيل التطبيق بالأسفل وقم بتفعيل 'السماح بالتشغيل التلقائي'.",
+                    fontSize = 11.sp,
+                    color = Color(0xFF5D4037)
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(6.dp))
+            
+            // Step 3
+            Row(verticalAlignment = Alignment.Top) {
+                Text("٣. ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
+                Text(
+                    text = "قفل التطبيق: من قائمة التطبيقات الأخيرة، اضغط على النقاط الثلاث بجانب اسم التطبيق واختر 'قفل' (Lock).",
+                    fontSize = 11.sp,
+                    color = Color(0xFF5D4037)
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(14.dp))
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Button 1: Request ignore optimizations
+                Button(
+                    onClick = {
+                        try {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = Uri.parse("package:${context.packageName}")
+                                }
+                                context.startActivity(intent)
+                            }
+                        } catch (e: Exception) {
+                            try {
+                                val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                                context.startActivity(intent)
+                            } catch (ex: Exception) {
+                                Toast.makeText(context, "الرجاء فتح إعدادات البطارية يدوياً واستثناء التطبيق", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (isIgnoringBattery) Color(0xFF4CAF50) else Color(0xFFF57F17)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = if (isIgnoringBattery) "تم الاستثناء ✓" else "تعطيل تحسين البطارية",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+                
+                // Button 2: App Details Settings
+                Button(
+                    onClick = {
+                        try {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "فشل فتح الإعدادات تلقائياً", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF030957)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.weight(1.1f)
+                ) {
+                    Text(
+                        text = "تفاصيل التطبيق (التشغيل التلقائي)",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
             }
         }
     }
@@ -1632,6 +1994,7 @@ fun SleekEventLogItem(event: CapturedEvent) {
                         val (bgCol, textCol, label) = when (event.classification) {
                             "STRONG_PROOF" -> Triple(Color(0xFFE8EAF6), Color(0xFF3F51B5), "إثبات مؤكد")
                             "SUPPORTING_PROOF" -> Triple(Color(0xFFE0F7FA), Color(0xFF00838F), "إثبات مساعد")
+                            "STANDBY_PROOF" -> Triple(Color(0xFFFFF9C4), Color(0xFFF57F17), "إثبات احتياطي")
                             "SYSTEM" -> Triple(Color(0xFFECEFF1), Color(0xFF37474F), "نظام")
                             else -> Triple(Color(0xFFF5F5F5), Color(0xFF616161), event.classification)
                         }

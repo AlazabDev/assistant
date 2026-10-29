@@ -94,6 +94,7 @@ class CapturedEventRepository(
 
     // Sms outbox tasks local operations
     suspend fun getPendingSmsTasks(): List<SmsTask> = smsTaskDao.getPendingTasks()
+    suspend fun getSmsTask(taskId: String): SmsTask? = smsTaskDao.getTaskById(taskId)
     suspend fun insertSmsTask(task: SmsTask) = smsTaskDao.insertTask(task)
     suspend fun insertSmsTasksIgnore(tasks: List<SmsTask>) = smsTaskDao.insertTasksIgnore(tasks)
     suspend fun updateSmsTask(task: SmsTask) = smsTaskDao.updateTask(task)

@@ -47,11 +47,58 @@ class MainViewModel(private val repository: CapturedEventRepository) : ViewModel
             initialValue = 0
         )
 
+    val gatewayTelemetry: StateFlow<GatewayConnectionTelemetry> = SmsGatewayService.telemetry
+
     val pingResult = MutableStateFlow<String?>(null)
     val smsSendResult = MutableStateFlow<String?>(null)
 
     private val _toastMessage = MutableSharedFlow<String>()
     val toastMessage: SharedFlow<String> = _toastMessage
+
+    fun toggleGatewayService(context: Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences("azab_assistant_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("sms_pull_enabled", enabled).apply()
+        if (enabled) {
+            SmsGatewayService.start(context)
+            viewModelScope.launch {
+                _toastMessage.emit("تم تشغيل بوابة الرسائل القصيرة للخط الرسمي (+201004006620)")
+            }
+        } else {
+            SmsGatewayService.stop(context)
+            viewModelScope.launch {
+                _toastMessage.emit("تم إيقاف بوابة الرسائل")
+            }
+        }
+    }
+
+    fun restartGateway(context: Context) {
+        viewModelScope.launch {
+            SmsGatewayService.stop(context)
+            kotlinx.coroutines.delay(500)
+            SmsGatewayService.start(context)
+            _toastMessage.emit("تمت إعادة تشغيل بوابة الخط الرسمي (+201004006620) بنجاح")
+        }
+    }
+
+    fun checkGatewayConnection(context: Context) {
+        viewModelScope.launch {
+            val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as? android.telephony.TelephonyManager
+            val simState = telephonyManager?.simState ?: android.telephony.TelephonyManager.SIM_STATE_UNKNOWN
+            val isSimReady = simState == android.telephony.TelephonyManager.SIM_STATE_READY || simState != android.telephony.TelephonyManager.SIM_STATE_ABSENT
+            
+            SmsGatewayService.updateTelemetry { current ->
+                current.copy(
+                    isSimReady = isSimReady,
+                    lastHeartbeatMs = System.currentTimeMillis()
+                )
+            }
+            if (isSimReady) {
+                _toastMessage.emit("اتصال الخط الرسمي (+201004006620) وشبكة فودافون مصر نشط")
+            } else {
+                _toastMessage.emit("تنبيه: تحقق من تثبيت شريحة الاتصال للخط (+201004006620)")
+            }
+        }
+    }
 
     fun pingHook(url: String, apiKey: String) {
         viewModelScope.launch {
@@ -95,54 +142,78 @@ class MainViewModel(private val repository: CapturedEventRepository) : ViewModel
     ) {
         viewModelScope.launch {
             if (recipient.isBlank() || entityId.isBlank() || messageText.isBlank()) {
-                smsSendResult.value = "Error: All fields are required"
-                _toastMessage.emit("Please fill in recipient, Entity ID, and message")
+                smsSendResult.value = "خطأ: يرجى إدخال رقم المستلم، كود المرجع، ونص الرسالة"
+                _toastMessage.emit("يرجى ملء جميع الحقول المطلوبة")
                 return@launch
             }
 
-            Log.d("AzabAssistant", "Attempting to send operational SMS: UseCase=$useCase, EntityID=$entityId")
+            val normalizedRecipient = AlazabEnterpriseConfig.normalizePhoneNumber(recipient)
+            if (normalizedRecipient.length < 9) {
+                smsSendResult.value = "خطأ: رقم هاتف المستلم غير صحيح ($recipient)"
+                _toastMessage.emit("رقم هاتف المستلم غير صحيح")
+                return@launch
+            }
+
+            Log.d("AzabAssistant", "Attempting to send operational SMS from official line (+201004006620) to $normalizedRecipient: UseCase=$useCase, EntityID=$entityId")
 
             try {
-                val smsManager = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                    context.getSystemService(SmsManager::class.java) ?: SmsManager.getDefault()
-                } else {
-                    SmsManager.getDefault()
-                }
-
                 // Add entity identifier to the text message to satisfy audit requirements
                 val finalMessage = "$messageText\n[Ref: $entityId | $useCase]"
 
                 val sentIntent = PendingIntent.getBroadcast(
-                    context, 0, Intent("SMS_SENT"), PendingIntent.FLAG_IMMUTABLE
+                    context,
+                    System.currentTimeMillis().toInt(),
+                    Intent("com.alazab.assistant.SMS_SENT").apply {
+                        putExtra("taskId", "manual_${System.currentTimeMillis()}")
+                        putExtra("phoneNumber", normalizedRecipient)
+                        putExtra("messageText", finalMessage)
+                    },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
                 val deliveredIntent = PendingIntent.getBroadcast(
-                    context, 0, Intent("SMS_DELIVERED"), PendingIntent.FLAG_IMMUTABLE
+                    context,
+                    (System.currentTimeMillis() + 1).toInt(),
+                    Intent("com.alazab.assistant.SMS_DELIVERED").apply {
+                        putExtra("taskId", "manual_${System.currentTimeMillis()}")
+                        putExtra("phoneNumber", normalizedRecipient)
+                        putExtra("messageText", finalMessage)
+                    },
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
 
-                smsManager.sendTextMessage(recipient, null, finalMessage, sentIntent, deliveredIntent)
-                Log.d("AzabAssistant", "Operational SMS sent via manager")
+                // Dispatch with safe multipart engine (handles UCS-2 Arabic lengths safely)
+                val partsCount = AlazabEnterpriseConfig.sendSmsSafely(
+                    context = context,
+                    recipient = normalizedRecipient,
+                    messageText = finalMessage,
+                    sentIntent = sentIntent,
+                    deliveryIntent = deliveredIntent
+                )
+                Log.d("AzabAssistant", "Operational SMS safely dispatched in $partsCount parts")
 
                 // Store outgoing event
                 val timeString = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())
                 val outgoingEvent = CapturedEvent(
-                    provider = "Azab System",
+                    provider = "مؤسسة العزب (+201004006620)",
                     channel = "sms",
                     direction = "outgoing",
                     rawText = finalMessage,
-                    sender = "Device",
+                    sender = AlazabEnterpriseConfig.OFFICIAL_ENTERPRISE_PHONE,
                     receivedAtDevice = timeString,
-                    classification = "SYSTEM",
+                    classification = "ENTERPRISE_DISPATCH",
                     entityId = entityId
                 )
 
                 repository.insertAndSync(outgoingEvent)
-                smsSendResult.value = "Sent successfully"
-                _toastMessage.emit("Operational SMS dispatched successfully")
+                val successText = "تم إرسال الرسالة بنجاح عبر الخط الرسمي (+201004006620) [عدد الأجزاء: $partsCount]"
+                smsSendResult.value = successText
+                _toastMessage.emit(successText)
 
             } catch (e: Exception) {
                 Log.e("AzabAssistant", "Failed to send operational SMS", e)
-                smsSendResult.value = "Error: ${e.localizedMessage}"
-                _toastMessage.emit("Sending failed: ${e.localizedMessage}")
+                val errText = "فشل الإرسال: ${e.localizedMessage}"
+                smsSendResult.value = errText
+                _toastMessage.emit(errText)
             }
         }
     }

@@ -8,6 +8,9 @@ interface SmsTaskDao {
     @Query("SELECT * FROM sms_tasks ORDER BY createdAt DESC")
     fun getAllSmsTasks(): Flow<List<SmsTask>>
 
+    @Query("SELECT * FROM sms_tasks WHERE taskId = :taskId")
+    suspend fun getTaskById(taskId: String): SmsTask?
+
     @Query("SELECT * FROM sms_tasks WHERE status = 'PENDING' OR (status = 'FAILED' AND retryCount < 3) ORDER BY createdAt ASC")
     suspend fun getPendingTasks(): List<SmsTask>
 
