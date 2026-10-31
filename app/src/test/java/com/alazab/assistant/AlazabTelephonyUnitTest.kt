@@ -131,5 +131,85 @@ class AlazabTelephonyUnitTest {
         assertEquals(100, telemetry.dailyLimit)
         assertTrue(telemetry.isSimReady)
     }
+
+    @Test
+    fun testSmsTemplateEngineVariableExtraction() {
+        val templateText = "مؤسسة العزب: رمز التحقق {otp} لرقم الهاتف {phone} طلب #{order_id}."
+        val vars = com.alazab.assistant.templates.SmsTemplateEngine.extractVariables(templateText)
+        assertTrue(vars.contains("otp"))
+        assertTrue(vars.contains("phone"))
+        assertTrue(vars.contains("order_id"))
+        assertEquals(3, vars.size)
+
+        // Test with Arabic placeholders
+        val arabicText = "تأكيد الدخول: رمزك هو {رمز_التحقق} للرقم {رقم_الهاتف}"
+        val arabicVars = com.alazab.assistant.templates.SmsTemplateEngine.extractVariables(arabicText)
+        assertTrue(arabicVars.contains("otp"))
+        assertTrue(arabicVars.contains("phone"))
+    }
+
+    @Test
+    fun testSmsTemplateEngineRenderingAndArabicAliases() {
+        val templateText = "مؤسسة العزب: تم طلب إعادة تعيين كلمة المرور لرقم {phone}. رمز التأكيد: {otp}. رابط: {link}"
+        val values = mapOf(
+            "phone" to "+201004006620",
+            "otp" to "584920",
+            "link" to "https://alazab.eg/reset"
+        )
+        val rendered = com.alazab.assistant.templates.SmsTemplateEngine.renderMessage(templateText, values)
+        assertTrue(rendered.contains("+201004006620"))
+        assertTrue(rendered.contains("584920"))
+        assertTrue(rendered.contains("https://alazab.eg/reset"))
+        assertFalse(rendered.contains("{phone}"))
+        assertFalse(rendered.contains("{otp}"))
+
+        // Test with Arabic keys in values
+        val renderedWithArabicKeys = com.alazab.assistant.templates.SmsTemplateEngine.renderMessage(
+            templateText,
+            mapOf(
+                "رقم_الهاتف" to "01004006620",
+                "رمز_التحقق" to "123456",
+                "الرابط" to "https://alazab.eg/auth"
+            )
+        )
+        assertTrue(renderedWithArabicKeys.contains("01004006620"))
+        assertTrue(renderedWithArabicKeys.contains("123456"))
+        assertTrue(renderedWithArabicKeys.contains("https://alazab.eg/auth"))
+    }
+
+    @Test
+    fun testSmsTemplateEngineGenerators() {
+        val otp6 = com.alazab.assistant.templates.SmsTemplateEngine.generateRandomOtp(6)
+        assertEquals(6, otp6.length)
+        assertTrue(otp6.all { it.isDigit() })
+
+        val otp4 = com.alazab.assistant.templates.SmsTemplateEngine.generateRandomOtp(4)
+        assertEquals(4, otp4.length)
+        assertTrue(otp4.all { it.isDigit() })
+
+        val orderId = com.alazab.assistant.templates.SmsTemplateEngine.generateRandomOrderId("AZ")
+        assertTrue(orderId.startsWith("AZ-"))
+        assertTrue(orderId.length >= 6)
+    }
+
+    @Test
+    fun testDefaultEnterpriseTemplatesCompleteness() {
+        val templates = com.alazab.assistant.templates.SmsTemplateEngine.getDefaultEnterpriseTemplates()
+        assertTrue("Must have at least 6 enterprise templates", templates.size >= 6)
+
+        val otpTemplate = templates.find { it.category == com.alazab.assistant.templates.SmsTemplateCategory.AUTH_OTP }
+        assertNotNull(otpTemplate)
+        assertTrue(otpTemplate!!.variables.contains("otp"))
+
+        val resetTemplate = templates.find { it.id == "tpl_password_reset_otp" }
+        assertNotNull(resetTemplate)
+        assertTrue(resetTemplate!!.variables.contains("phone"))
+        assertTrue(resetTemplate.variables.contains("otp"))
+
+        val maintTemplate = templates.find { it.category == com.alazab.assistant.templates.SmsTemplateCategory.MAINTENANCE }
+        assertNotNull(maintTemplate)
+        assertTrue(maintTemplate!!.variables.contains("order_id"))
+    }
 }
+
 

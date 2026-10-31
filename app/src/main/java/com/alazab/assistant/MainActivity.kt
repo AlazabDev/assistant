@@ -47,11 +47,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.alazab.assistant.ai.AiChatViewModel
+import com.alazab.assistant.ui.ai.AiChatComponent
+import com.alazab.assistant.util.configureAppCheck
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import com.alazab.assistant.data.AppDatabase
 import com.alazab.assistant.data.CapturedEvent
 import com.alazab.assistant.data.CapturedEventRepository
 import com.alazab.assistant.network.HookClient
+import com.alazab.assistant.templates.SmsTemplateRepository
 import com.alazab.assistant.ui.SmsGatewayStatusCard
+import com.alazab.assistant.ui.templates.SmsTemplatesSection
 import com.alazab.assistant.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -61,13 +68,18 @@ class MainActivity : ComponentActivity() {
     private val database by lazy { AppDatabase.getDatabase(this) }
     private val hookClient by lazy { HookClient() }
     private val repository by lazy { CapturedEventRepository(database.capturedEventDao(), database.smsTaskDao(), hookClient, this) }
+    private val templateRepository by lazy { SmsTemplateRepository(this) }
 
     private val viewModel: MainViewModel by viewModels {
-        MainViewModelFactory(repository)
+        MainViewModelFactory(repository, templateRepository)
     }
+
+    private val aiChatViewModel: AiChatViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Configure App Check with launch intent before any UI or Firebase operations
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
 
         // Set default configurations if not set
@@ -90,6 +102,7 @@ class MainActivity : ComponentActivity() {
                 ) { innerPadding ->
                     AzabDiagnosticsScreen(
                         viewModel = viewModel,
+                        aiChatViewModel = aiChatViewModel,
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -120,13 +133,12 @@ fun SleekTopAppBar() {
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color.White)
-                    .border(1.5.dp, Color(0xFFFFB900), RoundedCornerShape(12.dp))
-                    .padding(3.dp),
+                    .background(Color(0xFF020B42))
+                    .border(1.5.dp, Color(0xFFFFB900), RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 androidx.compose.foundation.Image(
-                    painter = painterResource(id = R.drawable.azab_assistant_logo),
+                    painter = painterResource(id = R.drawable.ic_launcher_az),
                     contentDescription = "Azab Assistant Logo",
                     modifier = Modifier.fillMaxSize()
                 )
@@ -215,9 +227,56 @@ fun Modifier.drawBehindDivider() = this.drawBehind {
 
 // Custom canvas drawing helper
 
+@Composable
+fun TabNavigationButton(
+    label: String,
+    icon: ImageVector,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) Color(0xFF030957) else Color.Transparent
+        ),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier
+            .height(44.dp)
+            .clickable { onClick() }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 6.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = if (isSelected) Color(0xFFFFB900) else Color(0xFF5E5E62),
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                color = if (isSelected) Color.White else Color(0xFF5E5E62),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+fun AzabDiagnosticsScreen(
+    viewModel: MainViewModel,
+    aiChatViewModel: AiChatViewModel,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
 
     // Preferences configuration state
@@ -336,22 +395,139 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
         "تنبيه فني عاجل"
     )
 
-    LazyColumn(
+    var activeTab by remember { mutableStateOf(0) }
+
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFFF2F3F7))
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // App Description and general portal statement
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF030957)),
-                shape = RoundedCornerShape(24.dp),
+        // Navigation Tab Bar
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .border(1.dp, Color(0xFFE1E2EC), RoundedCornerShape(18.dp))
+        ) {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.5.dp, Color(0xFFFFB900), RoundedCornerShape(24.dp))
+                    .horizontalScroll(rememberScrollState())
+                    .padding(5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                TabNavigationButton(
+                    label = "قوالب الرسائل والمتغيرات",
+                    icon = Icons.Default.Description,
+                    isSelected = activeTab == 0,
+                    onClick = { activeTab = 0 },
+                    modifier = Modifier.padding(horizontal = 2.dp)
+                )
+                TabNavigationButton(
+                    label = "البوابة (+201004006620)",
+                    icon = Icons.Default.Hub,
+                    isSelected = activeTab == 1,
+                    onClick = { activeTab = 1 },
+                    modifier = Modifier.padding(horizontal = 2.dp)
+                )
+                TabNavigationButton(
+                    label = "المساعد الذكي (AI Chat)",
+                    icon = Icons.Default.AutoAwesome,
+                    isSelected = activeTab == 2,
+                    onClick = { activeTab = 2 },
+                    modifier = Modifier.padding(horizontal = 2.dp)
+                )
+                TabNavigationButton(
+                    label = "سجل العمليات",
+                    icon = Icons.Default.History,
+                    isSelected = activeTab == 3,
+                    onClick = { activeTab = 3 },
+                    modifier = Modifier.padding(horizontal = 2.dp)
+                )
+            }
+        }
+
+        if (activeTab == 2) {
+            AiChatComponent(
+                viewModel = aiChatViewModel,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f)
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f)
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                if (activeTab == 0) {
+            // Quick Status summary of line +201004006620
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF030957)),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color(0xFFFFB900), RoundedCornerShape(18.dp))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(if (gatewayTelemetry.isServiceRunning) Color(0xFF34A853) else Color(0xFFFFB900))
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "خط الإرسال المعتمد: ${AlazabEnterpriseConfig.OFFICIAL_ENTERPRISE_PHONE}",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "حالة البوابة: ${gatewayTelemetry.state.titleAr} (${gatewayTelemetry.carrierName})",
+                                    fontSize = 10.sp,
+                                    color = Color(0xFFE1E2EC)
+                                )
+                            }
+                        }
+
+                        TextButton(
+                            onClick = { activeTab = 1 },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text("إدارة البوابة", fontSize = 10.sp, color = Color(0xFFFFB900), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            // SMS Templates & Dynamic Variables Workshop Section
+            item {
+                SmsTemplatesSection(viewModel = viewModel)
+            }
+        } else if (activeTab == 1) {
+            // App Description and general portal statement
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF030957)),
+                    shape = RoundedCornerShape(24.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.5.dp, Color(0xFFFFB900), RoundedCornerShape(24.dp))
+                ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -1677,30 +1853,8 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
                 }
             }
         }
-
-        // Captured Events Header
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "سجل الأحداث الأخيرة (${events.size})",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF030957)
-                )
-                TextButton(
-                    onClick = { viewModel.clearLogs() },
-                    colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF030957))
-                ) {
-                    Text("مسح السجل")
-                }
-            }
-        }
-
-        if (events.isEmpty()) {
+        } else if (activeTab == 3) {
+            // Active Tab 3: Logs and Outbox
             item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -1709,20 +1863,112 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
                         .fillMaxWidth()
                         .border(1.dp, Color(0xFFE1E2EC), RoundedCornerShape(24.dp))
                 ) {
-                    Text(
-                        text = "لم يتم التقاط أي أحداث بعد. سيتم تسجيل أي إشعارات أو رسائل دفع هنا تلقائياً.",
-                        fontSize = 12.sp,
-                        color = Color(0xFF5E5E62),
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 32.dp, horizontal = 16.dp)
-                    )
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("سجل المهام والرسائل الصادرة (${smsTasks.size})", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF001D35))
+                            TextButton(onClick = { viewModel.clearAllSmsTasks() }) {
+                                Text("مسح الصادر", color = Color.Red, fontSize = 11.sp)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        if (smsTasks.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("لا توجد رسائل صادرة في السجل حالياً", fontSize = 11.sp, color = Color(0xFF5E5E62))
+                            }
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                smsTasks.take(10).forEach { task ->
+                                    Card(
+                                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FF)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(task.phoneNumber, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF001D35))
+                                                val (badgeBg, badgeText, label) = when (task.status) {
+                                                    "SENT" -> Triple(Color(0xFFE8F5E9), Color(0xFF2E7D32), "تم الإرسال")
+                                                    "PENDING" -> Triple(Color(0xFFFFFDE7), Color(0xFFF57F17), "قيد الانتظار")
+                                                    else -> Triple(Color(0xFFFFEBEE), Color(0xFFC62828), "فشل")
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(50.dp))
+                                                        .background(badgeBg)
+                                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text(label, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = badgeText)
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(task.messageText, fontSize = 11.sp, color = Color(0xFF333333))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        } else {
-            items(events) { event ->
-                SleekEventLogItem(event = event)
+
+            // Captured Events Header
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "سجل الإشعارات والأحداث المستلمة (${events.size})",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF030957)
+                    )
+                    TextButton(
+                        onClick = { viewModel.clearLogs() },
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF030957))
+                    ) {
+                        Text("مسح السجل")
+                    }
+                }
+            }
+
+            if (events.isEmpty()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(24.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, Color(0xFFE1E2EC), RoundedCornerShape(24.dp))
+                    ) {
+                        Text(
+                            text = "لم يتم التقاط أي أحداث بعد. سيتم تسجيل أي إشعارات أو رسائل دفع هنا تلقائياً.",
+                            fontSize = 12.sp,
+                            color = Color(0xFF5E5E62),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 32.dp, horizontal = 16.dp)
+                        )
+                    }
+                }
+            } else {
+                items(events) { event ->
+                    SleekEventLogItem(event = event)
+                }
             }
         }
 
@@ -1730,18 +1976,13 @@ fun AzabDiagnosticsScreen(viewModel: MainViewModel, modifier: Modifier = Modifie
             Spacer(modifier = Modifier.height(100.dp))
         }
     }
+    }
+}
 }
 
 @Composable
 fun RealmeOptimizationsCard() {
     val context = LocalContext.current
-    val manufacturer = remember { android.os.Build.MANUFACTURER }
-    val isRealmeOrOppo = remember {
-        manufacturer.contains("realme", ignoreCase = true) || 
-        manufacturer.contains("oppo", ignoreCase = true) ||
-        manufacturer.contains("oneplus", ignoreCase = true)
-    }
-
     val powerManager = remember { context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager }
     var isIgnoringBattery by remember {
         mutableStateOf(
@@ -1753,7 +1994,6 @@ fun RealmeOptimizationsCard() {
         )
     }
 
-    // Poller to update battery optimization state
     LaunchedEffect(Unit) {
         while (true) {
             isIgnoringBattery = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
@@ -1766,7 +2006,7 @@ fun RealmeOptimizationsCard() {
     }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF9C4)), // Warn style amber-yellow
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF9C4)),
         shape = RoundedCornerShape(24.dp),
         modifier = Modifier
             .fillMaxWidth()
@@ -1788,31 +2028,23 @@ fun RealmeOptimizationsCard() {
                     color = Color(0xFFE65100)
                 )
             }
-            
             Spacer(modifier = Modifier.height(8.dp))
-            
             Text(
                 text = "تقوم واجهة Realme UI بإغلاق التطبيقات في الخلفية تلقائياً لمنع استهلاك البطارية، مما قد يعطل استقبال الرسائل وإرسالها. اتبع الخطوات التالية للتشغيل المستمر:",
                 fontSize = 12.sp,
                 color = Color(0xFF5D4037),
                 lineHeight = 18.sp
             )
-            
             Spacer(modifier = Modifier.height(12.dp))
-            
-            // Step 1
             Row(verticalAlignment = Alignment.Top) {
                 Text("١. ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
                 Text(
-                    text = "استثناء من تحسين البطارية: اضغط على الزر بالأسفل واختر 'بلا قيود' (Unrestricted) أو 'عدم التحسين'.",
+                    text = "استثناء من تحسين البطارية: اضغط على الزر بالأسفل واختر 'بلا قيود' (Unrestricted).",
                     fontSize = 11.sp,
                     color = Color(0xFF5D4037)
                 )
             }
-            
             Spacer(modifier = Modifier.height(6.dp))
-            
-            // Step 2
             Row(verticalAlignment = Alignment.Top) {
                 Text("٢. ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
                 Text(
@@ -1821,26 +2053,20 @@ fun RealmeOptimizationsCard() {
                     color = Color(0xFF5D4037)
                 )
             }
-            
             Spacer(modifier = Modifier.height(6.dp))
-            
-            // Step 3
             Row(verticalAlignment = Alignment.Top) {
                 Text("٣. ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
                 Text(
-                    text = "قفل التطبيق: من قائمة التطبيقات الأخيرة، اضغط على النقاط الثلاث بجانب اسم التطبيق واختر 'قفل' (Lock).",
+                    text = "قفل التطبيق: من قائمة التطبيقات الأخيرة، اضغط على النقاط الثلاث بجانب التطبيق واختر 'قفل' (Lock).",
                     fontSize = 11.sp,
                     color = Color(0xFF5D4037)
                 )
             }
-            
             Spacer(modifier = Modifier.height(14.dp))
-            
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Button 1: Request ignore optimizations
                 Button(
                     onClick = {
                         try {
@@ -1870,8 +2096,7 @@ fun RealmeOptimizationsCard() {
                         color = Color.White
                     )
                 }
-                
-                // Button 2: App Details Settings
+
                 Button(
                     onClick = {
                         try {
@@ -2073,3 +2298,5 @@ private fun isNotificationServiceEnabled(context: Context): Boolean {
     val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
     return flat != null && flat.contains(cn.flattenToString())
 }
+
+
